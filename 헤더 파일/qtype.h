@@ -1,6 +1,7 @@
 #ifndef _QTYPE_H  // header guard
 #define _QTYPE_H
-
+#include <atomic>
+#include <mutex>
 // ==========이 파일은 수정 가능==========
 
 typedef unsigned int Key;  // 값이 클수록 높은 우선순위
@@ -25,6 +26,12 @@ typedef struct node_t {
 
 typedef struct {
     Node* head, tail;
+    Item* heap;
+    std::atomic<int> capacity;
+    std::atomic<int> size;
+
+    std::mutex enqueue_mtx;
+    std::mutex dequeue_mtx;
     // 필드 추가 가능
 } Queue;
 
