@@ -56,7 +56,11 @@ static void resize_heap(QueueImpl* pq, int new_capacity) {
         new_heap[i].key = pq->heap[i].key;
         size_t len = strlen((char*)pq->heap[i].value) + 1;
         new_heap[i].value = malloc(len);
-        memcpy(new_heap[i].value, pq->heap[i].value, len);
+        if (new_heap[i].value == nullptr) {
+            std::cerr << "resize_heap 함수에서 malloc 실패\n";
+            std::exit(EXIT_FAILURE);
+        }
+        memcpy((char*)new_heap[i].value, (char*)pq->heap[i].value, len);
         free(pq->heap[i].value);
     }
     delete[] pq->heap;
@@ -92,17 +96,26 @@ Reply enqueue(Queue* queue, Item item) {
     int sz = pq->size.load();
     int cap = pq->capacity.load();
 
+    // 중복 key 검사 및 갱신
     for (int i = 0; i < sz; ++i) {
         if (pq->heap[i].key == item.key) {
             free(pq->heap[i].value);
             size_t len = strlen((char*)item.value) + 1;
             pq->heap[i].value = malloc(len);
-            memcpy(pq->heap[i].value, item.value, len);
+            if (pq->heap[i].value == nullptr) {
+                std::cerr << "enqueue 함수에서 malloc 실패\n";
+                std::exit(EXIT_FAILURE);
+            }
+            memcpy((char*)pq->heap[i].value, (char*)item.value, len);
 
             reply.success = true;
             reply.item.key = item.key;
             reply.item.value = malloc(len);
-            memcpy(reply.item.value, item.value, len);
+            if (reply.item.value == nullptr) {
+                std::cerr << "enqueue 함수에서 reply용 malloc 실패\n";
+                std::exit(EXIT_FAILURE);
+            }
+            memcpy((char*)reply.item.value, (char*)item.value, len);
             return reply;
         }
     }
@@ -114,7 +127,11 @@ Reply enqueue(Queue* queue, Item item) {
     size_t len = strlen((char*)item.value) + 1;
     pq->heap[sz].key = item.key;
     pq->heap[sz].value = malloc(len);
-    memcpy(pq->heap[sz].value, item.value, len);
+    if (pq->heap[sz].value == nullptr) {
+        std::cerr << "enqueue 함수에서 새로운 아이템 malloc 실패\n";
+        std::exit(EXIT_FAILURE);
+    }
+    memcpy((char*)pq->heap[sz].value, (char*)item.value, len);
     pq->size.store(sz + 1);
 
     heapify_up(pq, sz);
@@ -122,7 +139,11 @@ Reply enqueue(Queue* queue, Item item) {
     reply.success = true;
     reply.item.key = item.key;
     reply.item.value = malloc(len);
-    memcpy(reply.item.value, item.value, len);
+    if (reply.item.value == nullptr) {
+        std::cerr << "enqueue 함수에서 reply용 malloc 실패\n";
+        std::exit(EXIT_FAILURE);
+    }
+    memcpy((char*)reply.item.value, (char*)item.value, len);
     return reply;
 }
 
@@ -148,11 +169,68 @@ Reply dequeue(Queue* queue) {
     reply.success = true;
     reply.item.key = ret.key;
     reply.item.value = malloc(len);
-    memcpy(reply.item.value, ret.value, len);
+    if (reply.item.value == nullptr) {
+        std::cerr << "dequeue 함수에서 malloc 실패\n";
+        std::exit(EXIT_FAILURE);
+    }
+    memcpy((char*)reply.item.value, (char*)ret.value, len);
 
     return reply;
 }
 
 Queue* range(Queue* queue, Key start, Key end) {
-    return nullptr;
+    if (!queue) return nullptr;
+    QueueImpl* pq = to_impl(queue);
+
+    // 1. 원본 큐 잠금: 범위 내 아이템 수 먼저 셈
+    int sz = pq->size.load();
+    int* matched_indices = new int[sz];
+    int count = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(pq->mtx);
+        for (int i = 0; i < sz; ++i) {
+            if (pq->heap[i].key >= start && pq->heap[i].key <= end) {
+                matched_indices[count++] = i;
+            }
+        }
+    }
+
+    // 2. 새 큐 초기화 및 충분한 용량 확보
+    Queue* new_queue = init();
+    QueueImpl* new_pq = to_impl(new_queue);
+
+    if (count > new_pq->capacity.load()) {
+        resize_heap(new_pq, count * 2);
+    }
+
+    // 3. 새 큐 잠금 후 깊은 복사
+    {
+        std::lock_guard<std::mutex> lock(new_pq->mtx);
+        for (int i = 0; i < count; ++i) {
+            int idx = matched_indices[i];
+            Item& orig_item = pq->heap[idx];
+            Item new_item;
+            size_t len = strlen((char*)orig_item.value) + 1;
+            new_item.key = orig_item.key;
+            new_item.value = malloc(len);
+            if (new_item.value == nullptr) {
+                std::cerr << "range 함수에서 malloc 실패\n";
+                std::exit(EXIT_FAILURE);
+            }
+            memcpy(new_item.value, orig_item.value, len);
+
+            new_pq->heap[i] = new_item;
+        }
+        new_pq->size.store(count);
+
+        // 4. bottom-up heapify_down으로 힙 재구성
+        for (int i = count / 2 - 1; i >= 0; --i) {
+            heapify_down(new_pq, i);
+        }
+    }
+
+    delete[] matched_indices;
+    return new_queue;
 }
+
