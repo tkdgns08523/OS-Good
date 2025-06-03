@@ -3,7 +3,7 @@
 #include <atomic>
 #include <cstring>
 #include <cstdlib>
-#include "qtype.h"
+#include "queue.h"
 
 struct QueueImpl {
     Item* heap;
