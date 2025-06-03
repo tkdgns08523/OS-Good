@@ -9,6 +9,7 @@ struct QueueImpl {
     Item* heap;
     std::atomic<int> capacity;
     std::atomic<int> size;
+
     std::mutex enqueue_mtx;
     std::mutex dequeue_mtx;
     std::mutex resize_mtx;
@@ -38,7 +39,7 @@ static void heapify_up(QueueImpl* pq, int idx) {
 }
 
 static void heapify_down(QueueImpl* pq, int idx) {
-    int sz = pq->size.load();
+    int sz = pq->size.load(std::memory_order_acquire);
     while (true) {
         int l = left(idx);
         int r = right(idx);
@@ -53,35 +54,38 @@ static void heapify_down(QueueImpl* pq, int idx) {
 
 static void resize_heap(QueueImpl* pq, int new_capacity) {
     Item* new_heap = new Item[new_capacity];
-    int sz = pq->size.load();
+    int sz = pq->size.load(std::memory_order_acquire);
+
     for (int i = 0; i < sz; ++i) {
         new_heap[i].key = pq->heap[i].key;
-        size_t len = strlen((char*)pq->heap[i].value) + 1;
+        size_t len = pq->heap[i].size;
         new_heap[i].value = malloc(len);
-        if (new_heap[i].value == nullptr) {
-            std::cerr << "resize_heap 함수에서 malloc 실패\n";
+        if (!new_heap[i].value) {
+            std::cerr << "resize_heap: malloc 실패\n";
             std::exit(EXIT_FAILURE);
         }
-        memcpy((char*)new_heap[i].value, (char*)pq->heap[i].value, len);
+        memcpy(new_heap[i].value, pq->heap[i].value, len);
+        new_heap[i].size = len;
         free(pq->heap[i].value);
     }
     delete[] pq->heap;
     pq->heap = new_heap;
-    pq->capacity.store(new_capacity);
+    pq->capacity.store(new_capacity, std::memory_order_release);
 }
 
 Queue* init(void) {
     QueueImpl* pq = new QueueImpl;
-    pq->capacity = 1024;
-    pq->size = 0;
-    pq->heap = new Item[pq->capacity];
+    pq->capacity.store(16384, std::memory_order_release);
+    pq->size.store(0, std::memory_order_release);
+    pq->heap = new Item[pq->capacity.load()];
     return reinterpret_cast<Queue*>(pq);
 }
 
 void release(Queue* queue) {
     if (!queue) return;
     QueueImpl* pq = to_impl(queue);
-    for (int i = 0; i < pq->size.load(); ++i) {
+    int sz = pq->size.load(std::memory_order_acquire);
+    for (int i = 0; i < sz; ++i) {
         free(pq->heap[i].value);
     }
     delete[] pq->heap;
@@ -89,94 +93,105 @@ void release(Queue* queue) {
 }
 
 Reply enqueue(Queue* queue, Item item) {
-    Reply reply = { false, {0, nullptr} };
+    Reply reply = { false, {0, nullptr, 0} };
     if (!queue) return reply;
     QueueImpl* pq = to_impl(queue);
 
-    std::lock_guard<std::mutex> lock_enqueue(pq->enqueue_mtx);
-
-    int sz = pq->size.load();
-    int cap = pq->capacity.load();
-
-    // 중복 key 검사 및 갱신
-    for (int i = 0; i < sz; ++i) {
-        if (pq->heap[i].key == item.key) {
-            free(pq->heap[i].value);
-            size_t len = strlen((char*)item.value) + 1;
-            pq->heap[i].value = malloc(len);
-            if (pq->heap[i].value == nullptr) {
-                std::cerr << "enqueue 함수에서 malloc 실패\n";
-                std::exit(EXIT_FAILURE);
-            }
-            memcpy((char*)pq->heap[i].value, (char*)item.value, len);
-
-            reply.success = true;
-            reply.item.key = item.key;
-            reply.item.value = malloc(len);
-            if (reply.item.value == nullptr) {
-                std::cerr << "enqueue 함수에서 reply용 malloc 실패\n";
-                std::exit(EXIT_FAILURE);
-            }
-            memcpy((char*)reply.item.value, (char*)item.value, len);
-            return reply;
-        }
-    }
-
-    if (sz >= cap) {
+    // 락 순서 : resize -> enqueue
+    {
         std::lock_guard<std::mutex> lock_resize(pq->resize_mtx);
-        resize_heap(pq, cap * 2);
-    }
+        std::lock_guard<std::mutex> lock_enq(pq->enqueue_mtx);
 
-    size_t len = strlen((char*)item.value) + 1;
-    pq->heap[sz].key = item.key;
-    pq->heap[sz].value = malloc(len);
-    if (pq->heap[sz].value == nullptr) {
-        std::cerr << "enqueue 함수에서 새로운 아이템 malloc 실패\n";
-        std::exit(EXIT_FAILURE);
-    }
-    memcpy((char*)pq->heap[sz].value, (char*)item.value, len);
-    pq->size.store(sz + 1);
+        int sz = pq->size.load(std::memory_order_acquire);
+        int cap = pq->capacity.load(std::memory_order_acquire);
 
-    heapify_up(pq, sz);
+        // 중복 key 검사 및 갱신
+        for (int i = 0; i < sz; ++i) {
+            if (pq->heap[i].key == item.key) {
+                if (pq->heap[i].size != item.size) {
+                    free(pq->heap[i].value);
+                    pq->heap[i].value = malloc(item.size);
+                    if (!pq->heap[i].value) {
+                        std::cerr << "enqueue malloc 실패\n";
+                        std::exit(EXIT_FAILURE);
+                    }
+                }
+                memcpy(pq->heap[i].value, item.value, item.size);
+                pq->heap[i].size = item.size;
 
-    reply.success = true;
-    reply.item.key = item.key;
-    reply.item.value = malloc(len);
-    if (reply.item.value == nullptr) {
-        std::cerr << "enqueue 함수에서 reply용 malloc 실패\n";
-        std::exit(EXIT_FAILURE);
+                reply.success = true;
+                reply.item.key = item.key;
+                reply.item.value = malloc(item.size);
+                if (!reply.item.value) {
+                    std::cerr << "enqueue reply malloc 실패\n";
+                    std::exit(EXIT_FAILURE);
+                }
+                memcpy(reply.item.value, item.value, item.size);
+                reply.item.size = item.size;
+                return reply;
+            }
+        }
+
+        // 리사이징이 필요하면 수행
+        if (sz >= cap * 9 / 10) {
+            resize_heap(pq, cap * 2);
+            cap = pq->capacity.load(std::memory_order_acquire);
+        }
+
+        size_t len = item.size;
+        pq->heap[sz].key = item.key;
+        pq->heap[sz].value = malloc(len);
+        if (!pq->heap[sz].value) {
+            std::cerr << "enqueue malloc 실패\n";
+            std::exit(EXIT_FAILURE);
+        }
+        memcpy(pq->heap[sz].value, item.value, len);
+        pq->heap[sz].size = len;
+        pq->size.store(sz + 1, std::memory_order_release);
+
+        heapify_up(pq, sz);
+
+        reply.success = true;
+        reply.item.key = item.key;
+        reply.item.value = malloc(len);
+        if (!reply.item.value) {
+            std::cerr << "enqueue reply malloc 실패\n";
+            std::exit(EXIT_FAILURE);
+        }
+        memcpy(reply.item.value, item.value, len);
+        reply.item.size = len;
     }
-    memcpy((char*)reply.item.value, (char*)item.value, len);
     return reply;
 }
 
 Reply dequeue(Queue* queue) {
-    Reply reply = { false, {0, nullptr} };
+    Reply reply = { false, {0, nullptr, 0} };
     if (!queue) return reply;
     QueueImpl* pq = to_impl(queue);
 
-    std::lock_guard<std::mutex> lock_dequeue(pq->dequeue_mtx);
+    std::lock_guard<std::mutex> lock_deq(pq->dequeue_mtx);
 
-    int sz = pq->size.load();
+    int sz = pq->size.load(std::memory_order_acquire);
     if (sz <= 0) return reply;
 
     Item ret = pq->heap[0];
-    pq->size.store(sz - 1);
+    pq->size.store(sz - 1, std::memory_order_release);
 
-    if (pq->size.load() > 0) {
-        pq->heap[0] = pq->heap[pq->size.load()];
+    if (pq->size.load(std::memory_order_acquire) > 0) {
+        pq->heap[0] = pq->heap[pq->size.load(std::memory_order_acquire)];
         heapify_down(pq, 0);
     }
 
-    size_t len = strlen((char*)ret.value) + 1;
+    size_t len = ret.size;
     reply.success = true;
     reply.item.key = ret.key;
     reply.item.value = malloc(len);
-    if (reply.item.value == nullptr) {
-        std::cerr << "dequeue 함수에서 malloc 실패\n";
+    if (!reply.item.value) {
+        std::cerr << "dequeue malloc 실패\n";
         std::exit(EXIT_FAILURE);
     }
-    memcpy((char*)reply.item.value, (char*)ret.value, len);
+    memcpy(reply.item.value, ret.value, len);
+    reply.item.size = len;
 
     return reply;
 }
@@ -185,7 +200,7 @@ Queue* range(Queue* queue, Key start, Key end) {
     if (!queue) return nullptr;
     QueueImpl* pq = to_impl(queue);
 
-    int sz = pq->size.load();
+    int sz = pq->size.load(std::memory_order_acquire);
     int* matched_indices = new int[sz];
     int count = 0;
 
@@ -201,28 +216,33 @@ Queue* range(Queue* queue, Key start, Key end) {
     Queue* new_queue = init();
     QueueImpl* new_pq = to_impl(new_queue);
 
-    if (count > new_pq->capacity.load()) {
+    if (count > new_pq->capacity.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock_enq(new_pq->enqueue_mtx);
+        std::lock_guard<std::mutex> lock_deq(new_pq->dequeue_mtx);
+        std::lock_guard<std::mutex> lock_resize(new_pq->resize_mtx);
         resize_heap(new_pq, count * 2);
     }
 
     {
-        std::lock_guard<std::mutex> lock_new(new_pq->resize_mtx);
+        std::lock_guard<std::mutex> lock_enq(new_pq->enqueue_mtx);
+        std::lock_guard<std::mutex> lock_deq(new_pq->dequeue_mtx);
         for (int i = 0; i < count; ++i) {
             int idx = matched_indices[i];
             Item& orig_item = pq->heap[idx];
             Item new_item;
-            size_t len = strlen((char*)orig_item.value) + 1;
+            size_t len = orig_item.size;
             new_item.key = orig_item.key;
             new_item.value = malloc(len);
-            if (new_item.value == nullptr) {
-                std::cerr << "range 함수에서 malloc 실패\n";
+            if (!new_item.value) {
+                std::cerr << "range malloc 실패\n";
                 std::exit(EXIT_FAILURE);
             }
             memcpy(new_item.value, orig_item.value, len);
+            new_item.size = len;
 
             new_pq->heap[i] = new_item;
         }
-        new_pq->size.store(count);
+        new_pq->size.store(count, std::memory_order_release);
 
         for (int i = count / 2 - 1; i >= 0; --i) {
             heapify_down(new_pq, i);

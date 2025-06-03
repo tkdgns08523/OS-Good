@@ -10,6 +10,7 @@ typedef void* Value;
 typedef struct {
     Key key;
     Value value;
+    size_t size;
 } Item;
 
 typedef struct {
@@ -31,7 +32,7 @@ typedef struct {
 
     std::mutex enqueue_mtx;
     std::mutex dequeue_mtx;
-    std::mutex resize_mtx;
+    std::mutex resize_mtx;  // resize 시 전체 잠금
     // 필드 추가 가능
 } Queue;
 
