@@ -1,14 +1,15 @@
 #include <iostream>
 #include <mutex>
 #include <atomic>
-#include <cstring> 
-#include "queue.h"
+#include <cstring>
+#include <cstdlib>
+#include "qtype.h"
 
 struct QueueImpl {
     Item* heap;
     std::atomic<int> capacity;
     std::atomic<int> size;
-    std::mutex mtx; 
+    std::mutex mtx;
 };
 
 static QueueImpl* to_impl(Queue* q) {
@@ -40,11 +41,9 @@ static void heapify_down(QueueImpl* pq, int idx) {
         int l = left(idx);
         int r = right(idx);
         int largest = idx;
-
         if (l < sz && pq->heap[l].key > pq->heap[largest].key) largest = l;
         if (r < sz && pq->heap[r].key > pq->heap[largest].key) largest = r;
         if (largest == idx) break;
-
         swap_items(pq->heap[idx], pq->heap[largest]);
         idx = largest;
     }
@@ -53,9 +52,13 @@ static void heapify_down(QueueImpl* pq, int idx) {
 static void resize_heap(QueueImpl* pq, int new_capacity) {
     Item* new_heap = new Item[new_capacity];
     int sz = pq->size.load();
-
-    memcpy(new_heap, pq->heap, sizeof(Item) * sz);
-
+    for (int i = 0; i < sz; ++i) {
+        new_heap[i].key = pq->heap[i].key;
+        size_t len = strlen((char*)pq->heap[i].value) + 1;
+        new_heap[i].value = malloc(len);
+        memcpy(new_heap[i].value, pq->heap[i].value, len);
+        free(pq->heap[i].value);
+    }
     delete[] pq->heap;
     pq->heap = new_heap;
     pq->capacity.store(new_capacity);
@@ -69,30 +72,15 @@ Queue* init(void) {
     return reinterpret_cast<Queue*>(pq);
 }
 
-
 void release(Queue* queue) {
     if (!queue) return;
     QueueImpl* pq = to_impl(queue);
+    for (int i = 0; i < pq->size.load(); ++i) {
+        free(pq->heap[i].value);
+    }
     delete[] pq->heap;
     delete pq;
 }
-
-
-Node* nalloc(Item item) {
-	// Node 생성, item으로 초기화
-	return nullptr;
-}
-
-
-void nfree(Node* node) {
-	return;
-}
-
-
-Node* nclone(Node* node) {
-	return nullptr;
-}
-
 
 Reply enqueue(Queue* queue, Item item) {
     Reply reply = { false, {0, nullptr} };
@@ -104,18 +92,37 @@ Reply enqueue(Queue* queue, Item item) {
     int sz = pq->size.load();
     int cap = pq->capacity.load();
 
-    if (sz >= cap) {
-        resize_heap(pq, cap * 2);
-        cap = pq->capacity.load();
+    for (int i = 0; i < sz; ++i) {
+        if (pq->heap[i].key == item.key) {
+            free(pq->heap[i].value);
+            size_t len = strlen((char*)item.value) + 1;
+            pq->heap[i].value = malloc(len);
+            memcpy(pq->heap[i].value, item.value, len);
+
+            reply.success = true;
+            reply.item.key = item.key;
+            reply.item.value = malloc(len);
+            memcpy(reply.item.value, item.value, len);
+            return reply;
+        }
     }
 
-    pq->heap[sz] = item;
+    if (sz >= cap) {
+        resize_heap(pq, cap * 2);
+    }
+
+    size_t len = strlen((char*)item.value) + 1;
+    pq->heap[sz].key = item.key;
+    pq->heap[sz].value = malloc(len);
+    memcpy(pq->heap[sz].value, item.value, len);
     pq->size.store(sz + 1);
 
     heapify_up(pq, sz);
 
     reply.success = true;
-    reply.item = item;
+    reply.item.key = item.key;
+    reply.item.value = malloc(len);
+    memcpy(reply.item.value, item.value, len);
     return reply;
 }
 
@@ -137,11 +144,15 @@ Reply dequeue(Queue* queue) {
         heapify_down(pq, 0);
     }
 
+    size_t len = strlen((char*)ret.value) + 1;
     reply.success = true;
-    reply.item = ret;
+    reply.item.key = ret.key;
+    reply.item.value = malloc(len);
+    memcpy(reply.item.value, ret.value, len);
+
     return reply;
 }
 
 Queue* range(Queue* queue, Key start, Key end) {
-	return nullptr;
+    return nullptr;
 }
