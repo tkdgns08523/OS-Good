@@ -19,8 +19,11 @@
 
 ```
 2025.06.03 |           | ● 단일 mutex에서 다중 mutex 사용으로 처리율 향상 및 병목 현상 감소
-           | queue.cpp | ● enqueue, dequeue, range 깊은 복사 추가/수정, range 추가
-           |           | ● 중복 key에 대한 유일무이 가정 추가
+           |           | ● enqueue, dequeue, range 깊은 복사 추가/수정, range 추가
+           | queue.cpp | ● 중복 key에 대한 유일무이 가정 추가
+           |           | ● lock 순서 지정으로 메모리 참조 오류 예방
+           |           | ● atomic load/store에 memory_order 지정(메모리 가시성 및 스레드 간 동기화 명확화)
            -------------
            |  qtype.h  | ● heap 배열의 크기 확장 작업을 thread-safe하게 보호하기 위해 resize_mtx를 추가
+           |           | ● Item 구조체에 value 데이터 크기 저장용 size 필드를 추가하여 정확한 깊은 복사 및 메모리 관리를 구현
 ```
