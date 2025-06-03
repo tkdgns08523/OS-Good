@@ -9,7 +9,9 @@ struct QueueImpl {
     Item* heap;
     std::atomic<int> capacity;
     std::atomic<int> size;
-    std::mutex mtx;
+    std::mutex enqueue_mtx;
+    std::mutex dequeue_mtx;
+    std::mutex resize_mtx;
 };
 
 static QueueImpl* to_impl(Queue* q) {
@@ -91,7 +93,7 @@ Reply enqueue(Queue* queue, Item item) {
     if (!queue) return reply;
     QueueImpl* pq = to_impl(queue);
 
-    std::lock_guard<std::mutex> lock(pq->mtx);
+    std::lock_guard<std::mutex> lock_enqueue(pq->enqueue_mtx);
 
     int sz = pq->size.load();
     int cap = pq->capacity.load();
@@ -121,6 +123,7 @@ Reply enqueue(Queue* queue, Item item) {
     }
 
     if (sz >= cap) {
+        std::lock_guard<std::mutex> lock_resize(pq->resize_mtx);
         resize_heap(pq, cap * 2);
     }
 
@@ -152,7 +155,7 @@ Reply dequeue(Queue* queue) {
     if (!queue) return reply;
     QueueImpl* pq = to_impl(queue);
 
-    std::lock_guard<std::mutex> lock(pq->mtx);
+    std::lock_guard<std::mutex> lock_dequeue(pq->dequeue_mtx);
 
     int sz = pq->size.load();
     if (sz <= 0) return reply;
@@ -182,13 +185,12 @@ Queue* range(Queue* queue, Key start, Key end) {
     if (!queue) return nullptr;
     QueueImpl* pq = to_impl(queue);
 
-    // 1. 원본 큐 잠금: 범위 내 아이템 수 먼저 셈
     int sz = pq->size.load();
     int* matched_indices = new int[sz];
     int count = 0;
 
     {
-        std::lock_guard<std::mutex> lock(pq->mtx);
+        std::lock_guard<std::mutex> lock_resize(pq->resize_mtx);
         for (int i = 0; i < sz; ++i) {
             if (pq->heap[i].key >= start && pq->heap[i].key <= end) {
                 matched_indices[count++] = i;
@@ -196,7 +198,6 @@ Queue* range(Queue* queue, Key start, Key end) {
         }
     }
 
-    // 2. 새 큐 초기화 및 충분한 용량 확보
     Queue* new_queue = init();
     QueueImpl* new_pq = to_impl(new_queue);
 
@@ -204,9 +205,8 @@ Queue* range(Queue* queue, Key start, Key end) {
         resize_heap(new_pq, count * 2);
     }
 
-    // 3. 새 큐 잠금 후 깊은 복사
     {
-        std::lock_guard<std::mutex> lock(new_pq->mtx);
+        std::lock_guard<std::mutex> lock_new(new_pq->resize_mtx);
         for (int i = 0; i < count; ++i) {
             int idx = matched_indices[i];
             Item& orig_item = pq->heap[idx];
@@ -224,7 +224,6 @@ Queue* range(Queue* queue, Key start, Key end) {
         }
         new_pq->size.store(count);
 
-        // 4. bottom-up heapify_down으로 힙 재구성
         for (int i = count / 2 - 1; i >= 0; --i) {
             heapify_down(new_pq, i);
         }
@@ -233,4 +232,3 @@ Queue* range(Queue* queue, Key start, Key end) {
     delete[] matched_indices;
     return new_queue;
 }
-

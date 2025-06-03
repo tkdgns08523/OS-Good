@@ -25,13 +25,13 @@ typedef struct node_t {
 } Node;
 
 typedef struct {
-    Node* head, tail;
     Item* heap;
     std::atomic<int> capacity;
     std::atomic<int> size;
 
     std::mutex enqueue_mtx;
     std::mutex dequeue_mtx;
+    std::mutex resize_mtx;
     // 필드 추가 가능
 } Queue;
 
