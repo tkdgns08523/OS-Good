@@ -27,3 +27,6 @@
            |  qtype.h  | ● heap 배열의 크기 확장 작업을 thread-safe하게 보호하기 위해 resize_mtx를 추가
            |           | ● Item 구조체에 value 데이터 크기 저장용 size 필드를 추가하여 정확한 깊은 복사 및 메모리 관리를 구현
 ```
+```
+2025.06.04 | queue.cpp | ● heap[0]의 shallow copy를 deep copy로 수정하여 dequeue()의 메모리 오류 방지
+```
