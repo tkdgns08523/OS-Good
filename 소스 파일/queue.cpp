@@ -174,25 +174,35 @@ Reply dequeue(Queue* queue) {
     int sz = pq->size.load(std::memory_order_acquire);
     if (sz <= 0) return reply;
 
-    Item ret = pq->heap[0];
-    pq->size.store(sz - 1, std::memory_order_release);
-
-    if (pq->size.load(std::memory_order_acquire) > 0) {
-        pq->heap[0] = pq->heap[pq->size.load(std::memory_order_acquire)];
-        heapify_down(pq, 0);
-    }
-
-    size_t len = ret.size;
-    reply.success = true;
-    reply.item.key = ret.key;
-    reply.item.value = malloc(len);
-    if (!reply.item.value) {
-        std::cerr << "dequeue malloc 실패\n";
+    // 깊은 복사로 ret 확보
+    Item ret;
+    ret.key = pq->heap[0].key;
+    ret.size = pq->heap[0].size;
+    ret.value = malloc(ret.size);
+    if (!ret.value) {
+        std::cerr << "dequeue: malloc 실패 (ret)\n";
         std::exit(EXIT_FAILURE);
     }
-    memcpy(reply.item.value, ret.value, len);
-    reply.item.size = len;
+    memcpy(ret.value, pq->heap[0].value, ret.size);
 
+    int new_sz = sz - 1;
+    if (new_sz > 0) {
+        pq->heap[0] = pq->heap[new_sz];
+        heapify_down(pq, 0);
+    }
+    pq->size.store(new_sz, std::memory_order_release);
+
+    reply.success = true;
+    reply.item.key = ret.key;
+    reply.item.size = ret.size;
+    reply.item.value = malloc(ret.size);
+    if (!reply.item.value) {
+        std::cerr << "dequeue: malloc 실패 (reply)\n";
+        std::exit(EXIT_FAILURE);
+    }
+    memcpy(reply.item.value, ret.value, ret.size);
+
+    free(ret.value);
     return reply;
 }
 
