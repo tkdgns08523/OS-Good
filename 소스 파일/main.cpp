@@ -8,7 +8,7 @@
 using namespace std;
 
 #define REQUEST_PER_CLIENT 10000
-#define NUM_CLIENTS 32
+#define NUM_CLIENTS 30
 
 atomic<unsigned long long> sum_key = 0;
 atomic<unsigned long long> sum_value = 0;
@@ -38,7 +38,7 @@ void client_func(Queue* queue, Request requests[], int n_request) {
         if (reply.success) {
             sum_key += reply.item.key;
 
-            if (reply.item.size == sizeof(int) && reply.item.value != nullptr) {
+            if (reply.item.value_size == sizeof(int) && reply.item.value != nullptr) {
                 int val = *(int*)(reply.item.value);  // 실제 int 값 읽기
                 sum_value += val;
             }
@@ -67,13 +67,13 @@ int main() {
             }
             *pval = rand() % 1000000;
             all_requests[offset + i].item.value = pval;
-            all_requests[offset + i].item.size = sizeof(int);
+            all_requests[offset + i].item.value_size = sizeof(int);  // 'size' -> 'value_size'
         }
         for (int i = REQUEST_PER_CLIENT / 2; i < REQUEST_PER_CLIENT; i++) {
             all_requests[offset + i].op = GET;
             all_requests[offset + i].item.key = 0;
             all_requests[offset + i].item.value = nullptr;
-            all_requests[offset + i].item.size = 0;
+            all_requests[offset + i].item.value_size = 0;  // 'size' -> 'value_size'
         }
     }
 

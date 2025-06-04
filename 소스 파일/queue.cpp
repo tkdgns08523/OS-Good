@@ -44,14 +44,14 @@ static void resize_heap(Queue* pq, int new_capacity) {
 
     for (int i = 0; i < sz; ++i) {
         new_heap[i].key = pq->heap[i].key;
-        size_t len = pq->heap[i].size;
+        size_t len = pq->heap[i].value_size; 
         new_heap[i].value = malloc(len);
         if (!new_heap[i].value) {
             std::cerr << "resize_heap: malloc 실패\n";
             std::exit(EXIT_FAILURE);
         }
         memcpy(new_heap[i].value, pq->heap[i].value, len);
-        new_heap[i].size = len;
+        new_heap[i].value_size = len; 
         free(pq->heap[i].value);
     }
     delete[] pq->heap;
@@ -92,26 +92,26 @@ Reply enqueue(Queue* queue, Item item) {
         // 중복 key 검사 및 갱신
         for (int i = 0; i < sz; ++i) {
             if (queue->heap[i].key == item.key) {
-                if (queue->heap[i].size != item.size) {
+                if (queue->heap[i].value_size != item.value_size) { 
                     free(queue->heap[i].value);
-                    queue->heap[i].value = malloc(item.size);
+                    queue->heap[i].value = malloc(item.value_size);
                     if (!queue->heap[i].value) {
                         std::cerr << "enqueue malloc 실패\n";
                         std::exit(EXIT_FAILURE);
                     }
                 }
-                memcpy(queue->heap[i].value, item.value, item.size);
-                queue->heap[i].size = item.size;
+                memcpy(queue->heap[i].value, item.value, item.value_size); 
+                queue->heap[i].value_size = item.value_size; 
 
                 reply.success = true;
                 reply.item.key = item.key;
-                reply.item.value = malloc(item.size);
+                reply.item.value = malloc(item.value_size);  
                 if (!reply.item.value) {
                     std::cerr << "enqueue reply malloc 실패\n";
                     std::exit(EXIT_FAILURE);
                 }
-                memcpy(reply.item.value, item.value, item.size);
-                reply.item.size = item.size;
+                memcpy(reply.item.value, item.value, item.value_size);  
+                reply.item.value_size = item.value_size; 
                 return reply;
             }
         }
@@ -122,7 +122,7 @@ Reply enqueue(Queue* queue, Item item) {
             cap = queue->capacity.load(std::memory_order_acquire);
         }
 
-        size_t len = item.size;
+        size_t len = item.value_size; 
         queue->heap[sz].key = item.key;
         queue->heap[sz].value = malloc(len);
         if (!queue->heap[sz].value) {
@@ -130,7 +130,7 @@ Reply enqueue(Queue* queue, Item item) {
             std::exit(EXIT_FAILURE);
         }
         memcpy(queue->heap[sz].value, item.value, len);
-        queue->heap[sz].size = len;
+        queue->heap[sz].value_size = len;  
         queue->size.store(sz + 1, std::memory_order_release);
 
         heapify_up(queue, sz);
@@ -143,7 +143,7 @@ Reply enqueue(Queue* queue, Item item) {
             std::exit(EXIT_FAILURE);
         }
         memcpy(reply.item.value, item.value, len);
-        reply.item.size = len;
+        reply.item.value_size = len;  
     }
     return reply;
 }
@@ -160,13 +160,13 @@ Reply dequeue(Queue* queue) {
     // 깊은 복사
     Item ret;
     ret.key = queue->heap[0].key;
-    ret.size = queue->heap[0].size;
-    ret.value = malloc(ret.size);
+    ret.value_size = queue->heap[0].value_size;  
+    ret.value = malloc(ret.value_size);
     if (!ret.value) {
         std::cerr << "dequeue: malloc 실패 (ret)\n";
         std::exit(EXIT_FAILURE);
     }
-    memcpy(ret.value, queue->heap[0].value, ret.size);
+    memcpy(ret.value, queue->heap[0].value, ret.value_size);
 
     int new_sz = sz - 1;
     if (new_sz > 0) {
@@ -177,13 +177,13 @@ Reply dequeue(Queue* queue) {
 
     reply.success = true;
     reply.item.key = ret.key;
-    reply.item.size = ret.size;
-    reply.item.value = malloc(ret.size);
+    reply.item.value_size = ret.value_size; 
+    reply.item.value = malloc(ret.value_size);
     if (!reply.item.value) {
         std::cerr << "dequeue: malloc 실패 (reply)\n";
         std::exit(EXIT_FAILURE);
     }
-    memcpy(reply.item.value, ret.value, ret.size);
+    memcpy(reply.item.value, ret.value, ret.value_size);
 
     free(ret.value);
     return reply;
@@ -221,7 +221,7 @@ Queue* range(Queue* queue, Key start, Key end) {
             int idx = matched_indices[i];
             Item& orig_item = queue->heap[idx];
             Item new_item;
-            size_t len = orig_item.size;
+            size_t len = orig_item.value_size;  
             new_item.key = orig_item.key;
             new_item.value = malloc(len);
             if (!new_item.value) {
@@ -229,7 +229,7 @@ Queue* range(Queue* queue, Key start, Key end) {
                 std::exit(EXIT_FAILURE);
             }
             memcpy(new_item.value, orig_item.value, len);
-            new_item.size = len;
+            new_item.value_size = len; 
 
             new_queue->heap[i] = new_item;
         }

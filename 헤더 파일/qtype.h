@@ -10,7 +10,7 @@ typedef void* Value;
 typedef struct {
     Key key;
     Value value;
-    size_t size;
+    int value_size;  // byte
 } Item;
 
 typedef struct {
@@ -27,6 +27,7 @@ typedef struct node_t {
 
 typedef struct {
     Item* heap;
+    Node* head, *tail;
     std::atomic<int> capacity;
     std::atomic<int> size;
 
