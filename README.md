@@ -31,7 +31,8 @@
 2025.06.04 | queue.cpp | ● heap[0]의 shallow copy를 deep copy로 수정하여 dequeue()의 메모리 오류 방지
 ```
 ```
-2025.06.05 |  qtype.h  | ● 과제 수정으로 인한 size_t size; →  int value_size; 로 변경
+2025.06.05 |  qtype.h  | ● 과제 수정으로 인한 size_t size; → int value_size; 로 변경
+           |           | ● Node* head, *tail;는 heap 구조에서는 필요 없지만, 테스트용 코드에서 head, tail에 대한 결과를 출력요구 시 사용하기 위함
            -------------
            | queue.cpp | ● size 변경에 따른 변수명 재정의
 ```
