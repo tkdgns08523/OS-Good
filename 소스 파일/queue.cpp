@@ -5,20 +5,6 @@
 #include <cstdlib>
 #include "queue.h"
 
-struct QueueImpl {
-    Item* heap;
-    std::atomic<int> capacity;
-    std::atomic<int> size;
-
-    std::mutex enqueue_mtx;
-    std::mutex dequeue_mtx;
-    std::mutex resize_mtx;
-};
-
-static QueueImpl* to_impl(Queue* q) {
-    return reinterpret_cast<QueueImpl*>(q);
-}
-
 static int parent(int i) { return (i - 1) / 2; }
 static int left(int i) { return 2 * i + 1; }
 static int right(int i) { return 2 * i + 2; }
@@ -29,7 +15,7 @@ static void swap_items(Item& a, Item& b) {
     b = tmp;
 }
 
-static void heapify_up(QueueImpl* pq, int idx) {
+static void heapify_up(Queue* pq, int idx) {
     while (idx > 0) {
         int p = parent(idx);
         if (pq->heap[p].key >= pq->heap[idx].key) break;
@@ -38,7 +24,7 @@ static void heapify_up(QueueImpl* pq, int idx) {
     }
 }
 
-static void heapify_down(QueueImpl* pq, int idx) {
+static void heapify_down(Queue* pq, int idx) {
     int sz = pq->size.load(std::memory_order_acquire);
     while (true) {
         int l = left(idx);
@@ -52,7 +38,7 @@ static void heapify_down(QueueImpl* pq, int idx) {
     }
 }
 
-static void resize_heap(QueueImpl* pq, int new_capacity) {
+static void resize_heap(Queue* pq, int new_capacity) {
     Item* new_heap = new Item[new_capacity];
     int sz = pq->size.load(std::memory_order_acquire);
 
@@ -74,50 +60,48 @@ static void resize_heap(QueueImpl* pq, int new_capacity) {
 }
 
 Queue* init(void) {
-    QueueImpl* pq = new QueueImpl;
+    Queue* pq = new Queue;
     pq->capacity.store(16384, std::memory_order_release);
     pq->size.store(0, std::memory_order_release);
     pq->heap = new Item[pq->capacity.load()];
-    return reinterpret_cast<Queue*>(pq);
+    return pq;
 }
 
 void release(Queue* queue) {
     if (!queue) return;
-    QueueImpl* pq = to_impl(queue);
-    int sz = pq->size.load(std::memory_order_acquire);
+    int sz = queue->size.load(std::memory_order_acquire);
     for (int i = 0; i < sz; ++i) {
-        free(pq->heap[i].value);
+        free(queue->heap[i].value);
     }
-    delete[] pq->heap;
-    delete pq;
+    delete[] queue->heap;
+    delete queue;
 }
 
 Reply enqueue(Queue* queue, Item item) {
     Reply reply = { false, {0, nullptr, 0} };
     if (!queue) return reply;
-    QueueImpl* pq = to_impl(queue);
 
     // 락 순서 : resize -> enqueue
     {
-        std::lock_guard<std::mutex> lock_resize(pq->resize_mtx);
-        std::lock_guard<std::mutex> lock_enq(pq->enqueue_mtx);
+        std::lock_guard<std::mutex> lock_resize(queue->resize_mtx);
+        std::lock_guard<std::mutex> lock_enq(queue->enqueue_mtx);
 
-        int sz = pq->size.load(std::memory_order_acquire);
-        int cap = pq->capacity.load(std::memory_order_acquire);
+        int sz = queue->size.load(std::memory_order_acquire);
+        int cap = queue->capacity.load(std::memory_order_acquire);
 
         // 중복 key 검사 및 갱신
         for (int i = 0; i < sz; ++i) {
-            if (pq->heap[i].key == item.key) {
-                if (pq->heap[i].size != item.size) {
-                    free(pq->heap[i].value);
-                    pq->heap[i].value = malloc(item.size);
-                    if (!pq->heap[i].value) {
+            if (queue->heap[i].key == item.key) {
+                if (queue->heap[i].size != item.size) {
+                    free(queue->heap[i].value);
+                    queue->heap[i].value = malloc(item.size);
+                    if (!queue->heap[i].value) {
                         std::cerr << "enqueue malloc 실패\n";
                         std::exit(EXIT_FAILURE);
                     }
                 }
-                memcpy(pq->heap[i].value, item.value, item.size);
-                pq->heap[i].size = item.size;
+                memcpy(queue->heap[i].value, item.value, item.size);
+                queue->heap[i].size = item.size;
 
                 reply.success = true;
                 reply.item.key = item.key;
@@ -132,24 +116,24 @@ Reply enqueue(Queue* queue, Item item) {
             }
         }
 
-        // 리사이징이 필요하면 수행
+        // 리사이징 필요 시
         if (sz >= cap * 9 / 10) {
-            resize_heap(pq, cap * 2);
-            cap = pq->capacity.load(std::memory_order_acquire);
+            resize_heap(queue, cap * 2);
+            cap = queue->capacity.load(std::memory_order_acquire);
         }
 
         size_t len = item.size;
-        pq->heap[sz].key = item.key;
-        pq->heap[sz].value = malloc(len);
-        if (!pq->heap[sz].value) {
+        queue->heap[sz].key = item.key;
+        queue->heap[sz].value = malloc(len);
+        if (!queue->heap[sz].value) {
             std::cerr << "enqueue malloc 실패\n";
             std::exit(EXIT_FAILURE);
         }
-        memcpy(pq->heap[sz].value, item.value, len);
-        pq->heap[sz].size = len;
-        pq->size.store(sz + 1, std::memory_order_release);
+        memcpy(queue->heap[sz].value, item.value, len);
+        queue->heap[sz].size = len;
+        queue->size.store(sz + 1, std::memory_order_release);
 
-        heapify_up(pq, sz);
+        heapify_up(queue, sz);
 
         reply.success = true;
         reply.item.key = item.key;
@@ -167,30 +151,29 @@ Reply enqueue(Queue* queue, Item item) {
 Reply dequeue(Queue* queue) {
     Reply reply = { false, {0, nullptr, 0} };
     if (!queue) return reply;
-    QueueImpl* pq = to_impl(queue);
 
-    std::lock_guard<std::mutex> lock_deq(pq->dequeue_mtx);
+    std::lock_guard<std::mutex> lock_deq(queue->dequeue_mtx);
 
-    int sz = pq->size.load(std::memory_order_acquire);
+    int sz = queue->size.load(std::memory_order_acquire);
     if (sz <= 0) return reply;
 
-    // 깊은 복사로 ret 확보
+    // 깊은 복사
     Item ret;
-    ret.key = pq->heap[0].key;
-    ret.size = pq->heap[0].size;
+    ret.key = queue->heap[0].key;
+    ret.size = queue->heap[0].size;
     ret.value = malloc(ret.size);
     if (!ret.value) {
         std::cerr << "dequeue: malloc 실패 (ret)\n";
         std::exit(EXIT_FAILURE);
     }
-    memcpy(ret.value, pq->heap[0].value, ret.size);
+    memcpy(ret.value, queue->heap[0].value, ret.size);
 
     int new_sz = sz - 1;
     if (new_sz > 0) {
-        pq->heap[0] = pq->heap[new_sz];
-        heapify_down(pq, 0);
+        queue->heap[0] = queue->heap[new_sz];
+        heapify_down(queue, 0);
     }
-    pq->size.store(new_sz, std::memory_order_release);
+    queue->size.store(new_sz, std::memory_order_release);
 
     reply.success = true;
     reply.item.key = ret.key;
@@ -208,37 +191,35 @@ Reply dequeue(Queue* queue) {
 
 Queue* range(Queue* queue, Key start, Key end) {
     if (!queue) return nullptr;
-    QueueImpl* pq = to_impl(queue);
 
-    int sz = pq->size.load(std::memory_order_acquire);
+    int sz = queue->size.load(std::memory_order_acquire);
     int* matched_indices = new int[sz];
     int count = 0;
 
     {
-        std::lock_guard<std::mutex> lock_resize(pq->resize_mtx);
+        std::lock_guard<std::mutex> lock_resize(queue->resize_mtx);
         for (int i = 0; i < sz; ++i) {
-            if (pq->heap[i].key >= start && pq->heap[i].key <= end) {
+            if (queue->heap[i].key >= start && queue->heap[i].key <= end) {
                 matched_indices[count++] = i;
             }
         }
     }
 
     Queue* new_queue = init();
-    QueueImpl* new_pq = to_impl(new_queue);
 
-    if (count > new_pq->capacity.load(std::memory_order_acquire)) {
-        std::lock_guard<std::mutex> lock_enq(new_pq->enqueue_mtx);
-        std::lock_guard<std::mutex> lock_deq(new_pq->dequeue_mtx);
-        std::lock_guard<std::mutex> lock_resize(new_pq->resize_mtx);
-        resize_heap(new_pq, count * 2);
+    if (count > new_queue->capacity.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock_enq(new_queue->enqueue_mtx);
+        std::lock_guard<std::mutex> lock_deq(new_queue->dequeue_mtx);
+        std::lock_guard<std::mutex> lock_resize(new_queue->resize_mtx);
+        resize_heap(new_queue, count * 2);
     }
 
     {
-        std::lock_guard<std::mutex> lock_enq(new_pq->enqueue_mtx);
-        std::lock_guard<std::mutex> lock_deq(new_pq->dequeue_mtx);
+        std::lock_guard<std::mutex> lock_enq(new_queue->enqueue_mtx);
+        std::lock_guard<std::mutex> lock_deq(new_queue->dequeue_mtx);
         for (int i = 0; i < count; ++i) {
             int idx = matched_indices[i];
-            Item& orig_item = pq->heap[idx];
+            Item& orig_item = queue->heap[idx];
             Item new_item;
             size_t len = orig_item.size;
             new_item.key = orig_item.key;
@@ -250,12 +231,12 @@ Queue* range(Queue* queue, Key start, Key end) {
             memcpy(new_item.value, orig_item.value, len);
             new_item.size = len;
 
-            new_pq->heap[i] = new_item;
+            new_queue->heap[i] = new_item;
         }
-        new_pq->size.store(count, std::memory_order_release);
+        new_queue->size.store(count, std::memory_order_release);
 
         for (int i = count / 2 - 1; i >= 0; --i) {
-            heapify_down(new_pq, i);
+            heapify_down(new_queue, i);
         }
     }
 
